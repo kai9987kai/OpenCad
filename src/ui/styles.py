@@ -85,7 +85,7 @@ QPushButton:pressed {
     background-color: #585b70;
 }
 
-QDoubleSpinBox {
+QDoubleSpinBox, QSpinBox, QComboBox {
     background-color: #181825;
     border: 1px solid #313244;
     border-radius: 4px;
@@ -93,15 +93,22 @@ QDoubleSpinBox {
     color: #cdd6f4;
 }
 
-QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {
+QDoubleSpinBox::up-button, QDoubleSpinBox::down-button,
+QSpinBox::up-button, QSpinBox::down-button {
     background-color: #313244;
     border: none;
     border-radius: 2px;
     margin: 1px;
 }
 
-QDoubleSpinBox::up-button:hover, QDoubleSpinBox::down-button:hover {
+QDoubleSpinBox::up-button:hover, QDoubleSpinBox::down-button:hover,
+QSpinBox::up-button:hover, QSpinBox::down-button:hover {
     background-color: #45475a;
+}
+
+QComboBox::drop-down {
+    border: none;
+    width: 20px;
 }
 
 QLabel {
