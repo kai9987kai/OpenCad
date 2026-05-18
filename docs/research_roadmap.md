@@ -19,6 +19,29 @@ features are useful: import/export, duplicate, additional primitives, numerical
 rotation, interactive move/scale/rotate widgets, boolean operations, mesh
 repair, mesh decimation, and named camera views.
 
+The third pass adds workflow depth: undo/redo snapshots, measurement feedback,
+linear and circular arrays, mirroring, alignment tools, transform freezing, fit
+selection, and an experimental surface offset operation. These tools make the
+app more useful for iterative CAD modeling while keeping the geometry pipeline
+mesh-based and inspectable.
+
+The fourth pass improves project-scale use: `.ocad` project save/open, outliner
+visibility and lock controls, isolate/show-all workflows, status feedback, and
+UI styling for dialogs and status bars. This gives future parametric and
+analysis features a persistent workspace instead of only a live viewport state.
+
+The fifth pass adds adjustable modeling tools and appearance workflow:
+parameterized decimation, surface offset, clipping, largest-component cleanup,
+visible-scene export, orthographic/perspective projection controls, and an
+Appearance dock for color presets, opacity, representation style, and edge
+visibility. This starts moving fixed commands toward inspectable tool panels.
+
+The sixth pass adds parameterized primitive creation and grid-aware editing:
+Primitive Lab creates dimensioned boxes, spheres, cylinders, cones, tori, and
+planes, while Grid/Snap supports object-position snapping and vertex snapping.
+Normal recompute and flip-normal tools improve imported and boolean-generated
+mesh repair.
+
 Relevant research direction:
 
 - Functionally graded TPMS and gyroid lattices are active additive

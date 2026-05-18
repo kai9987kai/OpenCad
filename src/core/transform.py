@@ -23,6 +23,9 @@ class TransformManager:
             return
 
         actor = self.scene.objects[oid]
+        if self.scene.metadata.get(oid, {}).get("locked") or not actor.GetVisibility():
+            return
+
         bounds = actor.GetBounds()
         self._base_user_matrix = self._actor_user_matrix(actor)
 

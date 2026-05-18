@@ -42,8 +42,8 @@ class MeshOps:
     @staticmethod
     def boolean(mesh_a, mesh_b, operation="union"):
         """Run a boolean operation on two closed, triangulated surface meshes."""
-        a = mesh_a.extract_surface().triangulate().clean()
-        b = mesh_b.extract_surface().triangulate().clean()
+        a = mesh_a.extract_surface(algorithm="dataset_surface").triangulate().clean()
+        b = mesh_b.extract_surface(algorithm="dataset_surface").triangulate().clean()
         operation = str(operation).lower()
 
         if operation == "union":
@@ -58,6 +58,103 @@ class MeshOps:
         if result.n_points == 0:
             raise ValueError("The boolean operation produced an empty mesh.")
         return result.clean().triangulate()
+
+    @staticmethod
+    def mirror(mesh, axis="x"):
+        """Mirror mesh geometry across a global origin plane."""
+        mirrored = mesh.copy()
+        axis_index = MeshOps._axis_index(axis)
+        mirrored.points[:, axis_index] *= -1.0
+        return MeshOps._repair_normals(mirrored)
+
+    @staticmethod
+    def translate(mesh, vector):
+        translated = mesh.copy()
+        translated.points += np.asarray(vector, dtype=float)
+        return translated
+
+    @staticmethod
+    def rotate_around_origin(mesh, angle_degrees, axis="z"):
+        rotated = mesh.copy()
+        axis = str(axis).lower()
+        angle = np.deg2rad(float(angle_degrees))
+        c, s = np.cos(angle), np.sin(angle)
+
+        if axis == "x":
+            matrix = np.array([[1, 0, 0], [0, c, -s], [0, s, c]])
+        elif axis == "y":
+            matrix = np.array([[c, 0, s], [0, 1, 0], [-s, 0, c]])
+        elif axis == "z":
+            matrix = np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]])
+        else:
+            raise ValueError("Axis must be X, Y, or Z.")
+
+        rotated.points = rotated.points @ matrix.T
+        return MeshOps._repair_normals(rotated)
+
+    @staticmethod
+    def offset_surface(mesh, distance=0.1):
+        """Create an experimental shell-like surface offset along vertex normals."""
+        distance = float(distance)
+        surface = mesh.extract_surface(algorithm="dataset_surface").triangulate().compute_normals(
+            point_normals=True,
+            cell_normals=False,
+            inplace=False,
+        )
+        normals = surface.point_data.get("Normals")
+        if normals is None:
+            raise ValueError("Could not compute normals for offset surface.")
+
+        offset = surface.copy()
+        offset.points = offset.points + normals * distance
+        return MeshOps._repair_normals(offset)
+
+    @staticmethod
+    def clip(mesh, axis="z", origin=0.0, keep_positive=True):
+        """Clip a mesh with an axis-aligned plane."""
+        axis = str(axis).lower()
+        MeshOps._axis_index(axis)
+        origin = float(origin)
+        origin_point = {
+            "x": (origin, 0.0, 0.0),
+            "y": (0.0, origin, 0.0),
+            "z": (0.0, 0.0, origin),
+        }[axis]
+        clipped = mesh.clip(
+            normal=axis,
+            origin=origin_point,
+            invert=not bool(keep_positive),
+        )
+        if clipped.n_points == 0:
+            raise ValueError("The clip operation produced an empty mesh.")
+        return clipped.extract_surface(algorithm="dataset_surface").triangulate().clean()
+
+    @staticmethod
+    def largest_component(mesh):
+        """Keep only the largest connected mesh island."""
+        largest = mesh.extract_surface(algorithm="dataset_surface").extract_largest()
+        if largest.n_points == 0:
+            raise ValueError("No connected component could be extracted.")
+        return largest.triangulate().clean()
+
+    @staticmethod
+    def snap_points(mesh, spacing=0.25):
+        """Quantize mesh vertices to a regular grid."""
+        spacing = max(float(spacing), 1e-6)
+        snapped = mesh.copy()
+        snapped.points = np.round(snapped.points / spacing) * spacing
+        return snapped.clean(tolerance=spacing * 1e-6).triangulate()
+
+    @staticmethod
+    def recompute_normals(mesh):
+        """Rebuild consistent surface normals."""
+        return MeshOps._repair_normals(mesh)
+
+    @staticmethod
+    def flip_normals(mesh):
+        """Reverse surface orientation and normals."""
+        flipped = mesh.extract_surface(algorithm="dataset_surface").triangulate().flip_faces()
+        return MeshOps._repair_normals(flipped)
 
     @staticmethod
     def create_tpms_lattice(
@@ -151,3 +248,25 @@ class MeshOps:
                 + np.cos(x) * np.cos(y) * np.sin(z)
             )
         raise ValueError(f"Unsupported TPMS type '{kind}'.")
+
+    @staticmethod
+    def _axis_index(axis):
+        normalized = str(axis).lower()
+        if normalized == "x":
+            return 0
+        if normalized == "y":
+            return 1
+        if normalized == "z":
+            return 2
+        raise ValueError("Axis must be X, Y, or Z.")
+
+    @staticmethod
+    def _repair_normals(mesh):
+        try:
+            return mesh.triangulate().clean().compute_normals(
+                auto_orient_normals=True,
+                consistent_normals=True,
+                inplace=False,
+            )
+        except TypeError:
+            return mesh.triangulate().clean().compute_normals(inplace=False)

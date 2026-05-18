@@ -51,6 +51,16 @@ QToolBar {
     padding: 5px;
 }
 
+QStatusBar {
+    background-color: #181825;
+    border-top: 1px solid #313244;
+    color: #a6adc8;
+}
+
+QDialog {
+    background-color: #1e1e2e;
+}
+
 QToolButton {
     background-color: transparent;
     border: 1px solid transparent;
@@ -109,6 +119,10 @@ QSpinBox::up-button:hover, QSpinBox::down-button:hover {
 QComboBox::drop-down {
     border: none;
     width: 20px;
+}
+
+QDialogButtonBox QPushButton {
+    min-width: 72px;
 }
 
 QLabel {
