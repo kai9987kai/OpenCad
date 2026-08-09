@@ -718,14 +718,24 @@ class MainWindow(QMainWindow):
             "",
             "OpenCad Project (*.ocad);;All Files (*)",
         )
-        if not fname:
-            return
+        if fname:
+            self.open_project_file(fname)
 
+    def open_project_file(self, path):
+        """Load a project from a path, with no dialog.
+
+        Split out from :meth:`open_project` so a file can be opened from the
+        command line - which is what makes double-clicking an ``.ocad`` file in
+        Explorer work once the installer registers the association.
+
+        Returns True when the project loaded.
+        """
+        path = str(path)
         try:
-            objects = ProjectIO.load(fname)
+            objects = ProjectIO.load(path)
         except Exception as exc:
             QMessageBox.warning(self, "Open Project Failed", str(exc))
-            return
+            return False
 
         self._record_undo()
         max_id = self._max_object_index(objects)
@@ -734,7 +744,33 @@ class MainWindow(QMainWindow):
             "selected_id": objects[0]["oid"] if objects else None,
             "id_counter": max_id + 1,
         })
-        self.statusBar().showMessage(f"Opened {Path(fname).name}", 5000)
+        self.statusBar().showMessage(f"Opened {Path(path).name}", 5000)
+        return True
+
+    def open_path(self, path):
+        """Open a project or import a mesh, chosen by the file's extension.
+
+        The single door the command line and the file association both use.
+        """
+        path = Path(path)
+        if not path.exists():
+            QMessageBox.warning(
+                self, "File Not Found", f"There is no file at:\n{path}"
+            )
+            return False
+
+        if path.suffix.lower() == ".ocad":
+            return self.open_project_file(path)
+
+        try:
+            mesh = self._read_mesh_file(str(path))
+        except Exception as exc:
+            QMessageBox.warning(self, "Import Failed", str(exc))
+            return False
+
+        self._add_scene_mesh(mesh, path.stem or "Imported Mesh", "#89b4fa")
+        self.statusBar().showMessage(f"Imported {path.name}", 5000)
+        return True
 
     def save_project(self):
         fname, _ = QFileDialog.getSaveFileName(

@@ -1,0 +1,92 @@
+name: Release
+
+# Builds the Windows application and installer. PyInstaller freezes the
+# interpreter that runs it, so each architecture has to be built on a runner of
+# that architecture - there is no cross-compiling.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to build (e.g. 0.3.0)"
+        required: false
+        default: "0.3.0"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Windows ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            arch: x64
+          - runner: windows-11-arm
+            arch: arm64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          architecture: ${{ matrix.arch }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m venv .venv
+          .venv\Scripts\python -m pip install --upgrade pip
+          .venv\Scripts\python -m pip install -e ".[gui,accel,dev]" pyinstaller
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Build application and installer
+        run: .\packaging\build.ps1
+
+      - name: Name the artifacts
+        id: names
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem dist\installer -Filter *.exe | Select-Object -First 1
+          "installer=$($setup.FullName)" >> $env:GITHUB_OUTPUT
+          "installer_name=$($setup.Name)" >> $env:GITHUB_OUTPUT
+
+      - name: Package the portable folder
+        shell: pwsh
+        run: |
+          $name = "OpenCad-portable-windows-${{ matrix.arch }}.zip"
+          Compress-Archive -Path dist\OpenCad\* -DestinationPath "dist\$name"
+          Write-Host "Wrote dist\$name"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: opencad-windows-${{ matrix.arch }}
+          path: |
+            dist/installer/*.exe
+            dist/*.zip
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Attach to the release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/installer/*.exe
+            dist/*.zip
+          generate_release_notes: true
+          body: |
+            Windows builds are **architecture specific** - pick the one that
+            matches your machine. The installer refuses to install on the wrong
+            architecture rather than failing later.
+
+            The binaries are unsigned, so SmartScreen will warn on first run:
+            choose **More info** then **Run anyway**.
