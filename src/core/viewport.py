@@ -1,17 +1,17 @@
+from PySide6.QtWidgets import QVBoxLayout, QWidget
 from pyvistaqt import QtInteractor
-import pyvista as pv
-from PySide6.QtWidgets import QWidget, QVBoxLayout
+
 
 class CADViewport(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.layout = QVBoxLayout(self)
         self.layout.setContentsMargins(0, 0, 0, 0)
-        
+
         # Initialize PyVista Qt Interactor
         self.plotter = QtInteractor(self)
         self.layout.addWidget(self.plotter.interactor)
-        
+
         self.setup_scene()
 
     def setup_scene(self):

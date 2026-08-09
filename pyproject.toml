@@ -1,0 +1,76 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "opencad"
+version = "0.3.0"
+description = "An experimental Python CAD playground with a dependency-light geometry kernel"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "Kai Piper" }]
+keywords = ["cad", "geometry", "mesh", "sdf", "tpms", "lattice", "3d-printing"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Manufacturing",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Multimedia :: Graphics :: 3D Modeling",
+    "Topic :: Scientific/Engineering",
+]
+
+# The geometry kernel runs on numpy alone, which is what makes it testable in
+# CI without a GPU, a display server, or VTK.
+dependencies = ["numpy>=1.26"]
+
+[project.optional-dependencies]
+gui = ["PySide6>=6.6", "pyvista>=0.46", "pyvistaqt>=0.11"]
+accel = ["scipy>=1.11"]
+dev = ["pytest>=8.0", "pytest-cov>=4.1", "ruff>=0.4"]
+
+[project.urls]
+Homepage = "https://github.com/kai9987kai/OpenCad"
+Issues = "https://github.com/kai9987kai/OpenCad/issues"
+
+[project.scripts]
+opencad = "src.cli:main"
+
+[tool.setuptools]
+packages = ["src", "src.core", "src.kernel", "src.ui"]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q --strict-markers"
+markers = [
+    "gui: requires PySide6/pyvista and a display; skipped in headless CI",
+    "slow: heavier numerical tests",
+]
+filterwarnings = ["error::DeprecationWarning:src.*"]
+
+[tool.coverage.run]
+source = ["src/kernel"]
+omit = ["src/ui/*", "src/core/viewport.py", "src/core/transform.py"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+exclude = [".venv", "build", "dist", "__pycache__"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "C4", "SIM", "RUF"]
+ignore = [
+    "E501",    # long lines are reported by the formatter, not worth failing CI
+    "B008",    # Qt idioms construct defaults in call signatures
+    "SIM108",  # ternaries are not always clearer than if/else here
+    "RUF012",  # Qt/class-level mutable containers are conventional in this codebase
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E402"]
+"src/ui/*" = ["E402"]

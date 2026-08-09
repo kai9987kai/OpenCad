@@ -2,6 +2,7 @@ import numpy as np
 import pyvista as pv
 import vtk
 
+
 class TransformManager:
     def __init__(self, viewport, scene, on_update=None):
         self.viewport = viewport
@@ -59,7 +60,7 @@ class TransformManager:
                 pass_widget=True,
                 interaction_event="always",
             )
-    
+
     def disable_widget(self):
         if self.active_widget:
             self.viewport.plotter.clear_box_widgets()
@@ -67,15 +68,15 @@ class TransformManager:
 
     def _on_transform(self, _box_mesh, box_widget):
         oid = self.scene.selected_id
-        if not oid: 
+        if not oid:
             return
-            
+
         actor = self.scene.objects[oid]
         transform = vtk.vtkTransform()
         box_widget.GetTransform(transform)
         widget_matrix = pv.array_from_vtkmatrix(transform.GetMatrix())
         actor.user_matrix = widget_matrix @ self._base_user_matrix
-        
+
         if self.on_update:
             self.on_update(oid)
 

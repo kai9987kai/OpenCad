@@ -2,5 +2,23 @@ __pycache__/
 *.py[cod]
 .venv/
 venv/
+env/
 .pytest_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+build/
+dist/
+*.egg-info/
+.eggs/
 run_*.log
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Local model and export scratch files
+scratch/
+*.ocad.bak
