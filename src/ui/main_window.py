@@ -1,13 +1,16 @@
+import contextlib
 from pathlib import Path
 
 import numpy as np
 import pyvista as pv
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
-    QApplication,
-    QFileDialog,
     QAbstractItemView,
+    QApplication,
     QDialog,
     QDockWidget,
+    QFileDialog,
     QListWidget,
     QListWidgetItem,
     QMainWindow,
@@ -15,17 +18,26 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QToolBar,
 )
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QAction
-from src.core.viewport import CADViewport
-from src.core.scene import Scene
+
+from src.core.bridge import actor_world_mesh, to_polydata
+from src.core.mesh_ops import MeshOps
 from src.core.project_io import ProjectIO
-from src.ui.properties_panel import PropertiesPanel
-from src.ui.generative_panel import GenerativePanel
-from src.ui.measurements_panel import MeasurementsPanel
+from src.core.scene import Scene
+from src.core.transform import TransformManager
+from src.core.viewport import CADViewport
+from src.kernel import io_mesh
+from src.kernel.analysis import mesh_report, printability, volume_fraction
+from src.kernel.mesh import Mesh
+from src.kernel.meshing import surface_nets
+from src.ui.analysis_panel import AnalysisPanel
 from src.ui.appearance_panel import AppearancePanel
+from src.ui.generative_panel import GenerativePanel
 from src.ui.grid_panel import GridPanel
+from src.ui.implicit_panel import ImplicitPanel, build_lattice_field
+from src.ui.measurements_panel import MeasurementsPanel
 from src.ui.primitive_panel import PrimitivePanel
+from src.ui.properties_panel import PropertiesPanel
+from src.ui.tasks import TaskRunner
 from src.ui.tool_dialogs import (
     CircularArrayDialog,
     ClipDialog,
@@ -34,34 +46,73 @@ from src.ui.tool_dialogs import (
     OffsetSurfaceDialog,
 )
 
-from src.core.transform import TransformManager
+# ----------------------------------------------------------------------
+# Worker functions.
+#
+# These run on a thread pool, so they must touch nothing but plain data - no
+# actors, no widgets, no plotter. They return kernel meshes, which are numpy
+# arrays and safe to hand back to the GUI thread.
+# ----------------------------------------------------------------------
 
-from src.core.mesh_ops import MeshOps
+
+def _lattice_worker(context, params, bounds):
+    field, sampling_box, _ = build_lattice_field(params, bounds)
+
+    def report(fraction, message):
+        context.raise_if_cancelled()
+        context.progress(fraction, message)
+
+    return surface_nets(
+        field, bounds=sampling_box, resolution=int(params["resolution"]), progress=report
+    )
+
+
+def _density_worker(context, params, bounds):
+    field, _, region = build_lattice_field(params, bounds)
+    context.progress(0.2, "Sampling volume")
+    # Measure against the region the user asked to fill, not the padded sampling
+    # box - padding is empty space and would understate the density.
+    # A coarse grid is plenty for a density estimate and keeps it interactive.
+    return volume_fraction(field, bounds=region, resolution=min(int(params["resolution"]), 96))
+
+
+def _analysis_worker(context, mesh, params):
+    context.progress(0.2, "Measuring geometry")
+    report = mesh_report(mesh)
+    context.raise_if_cancelled()
+    context.progress(0.6, "Checking printability")
+    return report, printability(mesh, **params)
+
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Advanced CAD")
         self.resize(1200, 800)
-        
+
         self.scene = Scene()
         self.undo_stack = []
         self.redo_stack = []
         self.history_limit = 40
         self._restoring_history = False
-        
+
+        # Heavy geometry runs here so the viewport keeps repainting.
+        self.tasks = TaskRunner(self)
+        self.tasks.progress.connect(self._on_task_progress)
+        self.tasks.busy_changed.connect(self._on_busy_changed)
+
         # Central Widget - 3D Viewport
         self.viewport = CADViewport(self)
         self.setCentralWidget(self.viewport)
-        
+
         self.transform_mgr = TransformManager(self.viewport, self.scene, self.on_transform_update)
-        
+
         self.setup_ui()
-        
+
     def setup_ui(self):
         # Menubar
         menubar = self.menuBar()
-        
+
         # File Menu
         file_menu = menubar.addMenu("File")
         new_project_act = QAction("New Project", self)
@@ -153,15 +204,15 @@ class MainWindow(QMainWindow):
         freeze_act = QAction("Freeze Transforms", self)
         freeze_act.triggered.connect(self.freeze_selected_transforms)
         modify_menu.addAction(freeze_act)
-        
+
         # View Menu
         view_menu = menubar.addMenu("View")
-        
+
         wireframe_act = QAction("Toggle Wireframe", self)
         wireframe_act.setCheckable(True)
         wireframe_act.triggered.connect(self.toggle_wireframe)
         view_menu.addAction(wireframe_act)
-        
+
         reset_cam_act = QAction("Reset Camera", self)
         reset_cam_act.triggered.connect(self.reset_camera)
         view_menu.addAction(reset_cam_act)
@@ -218,15 +269,15 @@ class MainWindow(QMainWindow):
 
         # Mesh Menu
         mesh_menu = menubar.addMenu("Mesh")
-        
+
         subdivide_act = QAction("Subdivide", self)
         subdivide_act.triggered.connect(self.op_subdivide)
         mesh_menu.addAction(subdivide_act)
-        
+
         extrude_act = QAction("Extrude (Z)", self)
         extrude_act.triggered.connect(self.op_extrude)
         mesh_menu.addAction(extrude_act)
-        
+
         bevel_act = QAction("Bevel/Smooth", self)
         bevel_act.triggered.connect(self.op_bevel)
         mesh_menu.addAction(bevel_act)
@@ -281,15 +332,50 @@ class MainWindow(QMainWindow):
         tpms_act.triggered.connect(lambda: self.add_tpms_lattice())
         mesh_menu.addAction(tpms_act)
 
+        # Analyse Menu
+        analyse_menu = menubar.addMenu("Analyse")
+
+        printability_act = QAction("Printability Report", self)
+        printability_act.setShortcut("Ctrl+R")
+        printability_act.triggered.connect(
+            lambda: self.run_analysis(self.analysis_panel.parameters())
+        )
+        analyse_menu.addAction(printability_act)
+
+        # The docks are built further down setup_ui, so these must be lambdas -
+        # a bound method reference would be resolved now, before they exist.
+        show_analysis_act = QAction("Show Analysis Dock", self)
+        show_analysis_act.triggered.connect(lambda: self.analysis_dock.raise_())
+        analyse_menu.addAction(show_analysis_act)
+
+        analyse_menu.addSeparator()
+
+        implicit_act = QAction("Implicit Lab", self)
+        implicit_act.setShortcut("Ctrl+L")
+        implicit_act.triggered.connect(lambda: self.implicit_dock.raise_())
+        analyse_menu.addAction(implicit_act)
+
+        lattice_act = QAction("Generate Graded Lattice", self)
+        lattice_act.triggered.connect(
+            lambda: self.generate_implicit_lattice(self.implicit_panel.parameters())
+        )
+        analyse_menu.addAction(lattice_act)
+
+        density_act = QAction("Estimate Relative Density", self)
+        density_act.triggered.connect(
+            lambda: self.estimate_lattice_density(self.implicit_panel.parameters())
+        )
+        analyse_menu.addAction(density_act)
+
         # Toolbar
         toolbar = QToolBar("Tools")
         self.addToolBar(toolbar)
-        
+
         # Shapes
         add_cube_act = QAction("Add Cube", self)
         add_cube_act.triggered.connect(self.add_cube)
         toolbar.addAction(add_cube_act)
-        
+
         add_sphere_act = QAction("Add Sphere", self)
         add_sphere_act.triggered.connect(self.add_sphere)
         toolbar.addAction(add_sphere_act)
@@ -305,23 +391,23 @@ class MainWindow(QMainWindow):
         add_torus_act = QAction("Add Torus", self)
         add_torus_act.triggered.connect(self.add_torus)
         toolbar.addAction(add_torus_act)
-        
+
         add_plane_act = QAction("Add Plane", self)
         add_plane_act.triggered.connect(self.add_plane)
         toolbar.addAction(add_plane_act)
-        
+
         add_circle_act = QAction("Add Circle", self)
         add_circle_act.triggered.connect(self.add_circle)
         toolbar.addAction(add_circle_act)
-        
+
         toolbar.addSeparator()
 
         add_tpms_act = QAction("TPMS Lattice", self)
         add_tpms_act.triggered.connect(lambda: self.add_tpms_lattice())
         toolbar.addAction(add_tpms_act)
-        
+
         toolbar.addSeparator()
-        
+
         delete_act = QAction("Delete", self)
         delete_act.triggered.connect(self.delete_selected)
         toolbar.addAction(delete_act)
@@ -345,20 +431,20 @@ class MainWindow(QMainWindow):
         mirror_toolbar_act = QAction("Mirror X", self)
         mirror_toolbar_act.triggered.connect(lambda: self.mirror_selected("x"))
         toolbar.addAction(mirror_toolbar_act)
-        
+
         toolbar.addSeparator()
-        
+
         # Transform Tools
         self.select_act = QAction("Select", self)
         self.select_act.setCheckable(True)
         self.select_act.triggered.connect(lambda: self.set_tool(None))
         toolbar.addAction(self.select_act)
-        
+
         self.move_act = QAction("Move", self)
         self.move_act.setCheckable(True)
         self.move_act.triggered.connect(lambda: self.set_tool("translate"))
         toolbar.addAction(self.move_act)
-        
+
         self.scale_act = QAction("Scale", self)
         self.scale_act.setCheckable(True)
         self.scale_act.triggered.connect(lambda: self.set_tool("scale"))
@@ -368,7 +454,7 @@ class MainWindow(QMainWindow):
         self.rotate_act.setCheckable(True)
         self.rotate_act.triggered.connect(lambda: self.set_tool("rotate"))
         toolbar.addAction(self.rotate_act)
-        
+
         # Group for exclusive checking
         self.tools_group = [self.select_act, self.move_act, self.scale_act, self.rotate_act]
         self.select_act.setChecked(True)
@@ -383,7 +469,7 @@ class MainWindow(QMainWindow):
         self.scene_list.itemChanged.connect(self.on_item_renamed)
         self.scene_dock.setWidget(self.scene_list)
         self.addDockWidget(Qt.LeftDockWidgetArea, self.scene_dock)
-        
+
         # Dock - Properties
         self.prop_dock = QDockWidget("Properties", self)
         self.properties = PropertiesPanel()
@@ -391,9 +477,17 @@ class MainWindow(QMainWindow):
         self.prop_dock.setWidget(self.properties)
         self.addDockWidget(Qt.RightDockWidgetArea, self.prop_dock)
 
-        # Dock - Generative Lab
-        self.generative_dock = QDockWidget("Generative Lab", self)
+        # Dock - Generative Lab.
+        # Superseded by the Implicit Lab, which has more surfaces, metric wall
+        # thickness, grading, and threaded generation. Kept because it still
+        # works and existing habits should not break on an upgrade.
+        self.generative_dock = QDockWidget("Generative Lab (legacy)", self)
         self.generative_panel = GenerativePanel()
+        self.generative_panel.setToolTip(
+            "Superseded by the Implicit Lab (Ctrl+L), which offers seven surface "
+            "families, wall thickness in millimetres, graded lattices, and "
+            "generation on a background thread."
+        )
         self.generative_panel.generate_requested.connect(self.add_tpms_lattice)
         self.generative_dock.setWidget(self.generative_panel)
         self.addDockWidget(Qt.RightDockWidgetArea, self.generative_dock)
@@ -432,11 +526,167 @@ class MainWindow(QMainWindow):
         self.addDockWidget(Qt.RightDockWidgetArea, self.grid_dock)
         self.tabifyDockWidget(self.prop_dock, self.grid_dock)
 
+        # Dock - Implicit Lab (signed distance fields and graded lattices)
+        self.implicit_dock = QDockWidget("Implicit Lab", self)
+        self.implicit_panel = ImplicitPanel()
+        self.implicit_panel.generate_requested.connect(self.generate_implicit_lattice)
+        self.implicit_panel.estimate_requested.connect(self.estimate_lattice_density)
+        self.implicit_dock.setWidget(self.implicit_panel)
+        self.addDockWidget(Qt.RightDockWidgetArea, self.implicit_dock)
+        self.tabifyDockWidget(self.prop_dock, self.implicit_dock)
+
+        # Dock - Analysis
+        self.analysis_dock = QDockWidget("Analysis", self)
+        self.analysis_panel = AnalysisPanel()
+        self.analysis_panel.analyze_requested.connect(self.run_analysis)
+        self.analysis_dock.setWidget(self.analysis_panel)
+        self.addDockWidget(Qt.RightDockWidgetArea, self.analysis_dock)
+        self.tabifyDockWidget(self.prop_dock, self.analysis_dock)
+
         # Shortcuts
         from PySide6.QtGui import QKeySequence, QShortcut
         self.del_shortcut = QShortcut(QKeySequence.Delete, self)
         self.del_shortcut.activated.connect(self.delete_selected)
         self.update_status()
+
+    # ------------------------------------------------------------------
+    # Background work
+    # ------------------------------------------------------------------
+    def _on_task_progress(self, fraction, message):
+        self.statusBar().showMessage(f"{message} ({fraction * 100:.0f}%)")
+
+    def _on_busy_changed(self, busy):
+        self.implicit_panel.set_busy(busy)
+        self.analysis_panel.set_busy(busy)
+        if not busy:
+            self.update_status()
+
+    def _on_task_failed(self, message, traceback_text, title="Operation Failed"):
+        # Show the message, keep the traceback where a bug report can find it.
+        print(traceback_text)
+        QMessageBox.warning(self, title, message)
+        self.statusBar().showMessage(message, 8000)
+
+    def _selection_bounds(self):
+        """World-space ``(min_xyz, max_xyz)`` of the selection, or None."""
+        oids = self._selected_oids()
+        if not oids:
+            return None
+        bounds = self._combined_actor_bounds([self.scene.objects[oid] for oid in oids])
+        return (
+            np.array([bounds[0], bounds[2], bounds[4]], dtype=float),
+            np.array([bounds[1], bounds[3], bounds[5]], dtype=float),
+        )
+
+    def generate_implicit_lattice(self, params):
+        """Build a TPMS lattice on a worker thread and add it to the scene."""
+        bounds = None
+        if params.get("trim") == "bounds":
+            bounds = self._selection_bounds()
+            if bounds is None:
+                QMessageBox.information(
+                    self,
+                    "Select an Object",
+                    "Choose an object first so the lattice knows what to fill, "
+                    "or switch the extent back to a free-standing cube.",
+                )
+                return
+
+        label = f"{params['kind'].replace('_', ' ').title()} Lattice"
+        self.statusBar().showMessage(f"Generating {label}...")
+        self.tasks.submit(
+            _lattice_worker,
+            params,
+            bounds,
+            label=label,
+            on_result=lambda mesh, label=label: self._on_lattice_ready(mesh, label),
+            on_error=lambda message, tb: self._on_task_failed(
+                message, tb, "Lattice Generation Failed"
+            ),
+            on_cancelled=lambda: self.statusBar().showMessage("Lattice cancelled", 4000),
+        )
+
+    def _on_lattice_ready(self, mesh, label):
+        if mesh is None or mesh.is_empty:
+            QMessageBox.warning(
+                self,
+                "Empty Lattice",
+                "Those settings produced no geometry. Try a thicker wall, a "
+                "smaller cell size, or a higher resolution.",
+            )
+            return
+
+        oid = self._add_kernel_mesh(mesh, label, "#8bd5ca")
+        self.implicit_panel.set_status(
+            f"{mesh.n_faces:,} triangles, volume {mesh.volume:.1f} mm³"
+        )
+        self.statusBar().showMessage(
+            f"Generated {self.scene.get_name(oid)} - {mesh.n_faces:,} triangles", 6000
+        )
+
+    def estimate_lattice_density(self, params):
+        """Report what fraction of the volume the lattice would actually fill."""
+        bounds = self._selection_bounds() if params.get("trim") == "bounds" else None
+        if params.get("trim") == "bounds" and bounds is None:
+            QMessageBox.information(
+                self, "Select an Object", "Choose an object to measure the lattice inside."
+            )
+            return
+
+        self.tasks.submit(
+            _density_worker,
+            params,
+            bounds,
+            label="Relative density",
+            on_result=self._on_density_ready,
+            on_error=lambda message, tb: self._on_task_failed(
+                message, tb, "Density Estimate Failed"
+            ),
+        )
+
+    def _on_density_ready(self, result):
+        fraction = result["fraction"]
+        self.implicit_panel.set_status(
+            f"Relative density {fraction * 100:.1f}% - "
+            f"{result['solid_volume']:.0f} mm³ of {result['sampled_volume']:.0f} mm³. "
+            f"A part printed this way weighs about {fraction * 100:.0f}% of the solid."
+        )
+        self.statusBar().showMessage(f"Relative density {fraction * 100:.1f}%", 6000)
+
+    def run_analysis(self, params):
+        """Run the printability report on the selected object."""
+        oids = self._selected_oids()
+        if not oids:
+            QMessageBox.information(
+                self, "Select an Object", "Choose an object to analyse."
+            )
+            return
+
+        oid = oids[0]
+        name = self.scene.get_name(oid)
+        mesh = actor_world_mesh(self.scene.objects[oid])
+        self.analysis_dock.raise_()
+        self.tasks.submit(
+            _analysis_worker,
+            mesh,
+            params,
+            label=f"Analysing {name}",
+            on_result=lambda result, name=name: self.analysis_panel.show_report(
+                name, result[0], result[1]
+            ),
+            on_error=lambda message, tb: self._on_task_failed(
+                message, tb, "Analysis Failed"
+            ),
+        )
+
+    def _add_kernel_mesh(self, mesh, name, color, metadata=None):
+        """Add a numpy kernel mesh to the scene, converting at the boundary."""
+        return self._add_scene_mesh(to_polydata(mesh), name, color, metadata=metadata)
+
+    def closeEvent(self, event):
+        """Stop background work before the window and its plotter go away."""
+        self.tasks.shutdown()
+        super().closeEvent(event)
 
     def undo(self):
         if not self.undo_stack:
@@ -521,7 +771,7 @@ class MainWindow(QMainWindow):
         item = self.scene_list.itemAt(pos)
         if not item:
             return
-            
+
         menu = QMenu(self)
         delete_act = QAction("Delete", self)
         delete_act.triggered.connect(lambda: self.delete_object(item))
@@ -554,11 +804,11 @@ class MainWindow(QMainWindow):
             lock_act = QAction("Lock", self)
             lock_act.triggered.connect(lambda: self.lock_selected(True))
         menu.addAction(lock_act)
-        
+
         rename_act = QAction("Rename", self)
         rename_act.triggered.connect(lambda: self.edit_item(item))
         menu.addAction(rename_act)
-        
+
         menu.exec(self.scene_list.mapToGlobal(pos))
 
     def edit_item(self, item):
@@ -610,7 +860,7 @@ class MainWindow(QMainWindow):
     def set_tool(self, mode):
         for act in self.tools_group:
             act.setChecked(False)
-        
+
         if mode == "translate":
             self.move_act.setChecked(True)
         elif mode == "scale":
@@ -619,7 +869,7 @@ class MainWindow(QMainWindow):
             self.rotate_act.setChecked(True)
         else:
             self.select_act.setChecked(True)
-            
+
         self.transform_mgr.set_mode(mode)
 
     def on_object_picked(self, mesh):
@@ -641,7 +891,7 @@ class MainWindow(QMainWindow):
             self.appearance.set_actor(oid, actor)
             self.transform_mgr.update_widget()
             self._refresh_measurements()
-            
+
     def on_property_changed(self, oid, changes):
         if oid in self.scene.objects:
             if not self._ensure_editable(oid, "edit"):
@@ -656,7 +906,7 @@ class MainWindow(QMainWindow):
                 actor.orientation = changes["orientation"]
             if "color" in changes:
                 actor.prop.color = changes["color"]
-            
+
             self._refresh_measurements()
             self.viewport.plotter.render()
 
@@ -735,19 +985,34 @@ class MainWindow(QMainWindow):
             self,
             "Import Mesh",
             "",
-            "Mesh Files (*.stl *.ply *.obj *.vtp *.vtk);;All Files (*)",
+            "Mesh Files (*.stl *.obj *.ply *.off *.3mf *.vtp *.vtk);;"
+            "STL (*.stl);;OBJ (*.obj);;PLY (*.ply);;OFF (*.off);;3MF (*.3mf);;"
+            "VTK (*.vtp *.vtk);;All Files (*)",
         )
         if not fname:
             return
 
         try:
-            mesh = pv.read(fname).extract_surface().triangulate().clean()
+            mesh = self._read_mesh_file(fname)
         except Exception as exc:
             QMessageBox.warning(self, "Import Failed", str(exc))
             return
 
         name = Path(fname).stem or "Imported Mesh"
         self._add_scene_mesh(mesh, name, "#89b4fa")
+        self.statusBar().showMessage(f"Imported {Path(fname).name}", 5000)
+
+    def _read_mesh_file(self, path):
+        """Read through the kernel where possible, falling back to VTK.
+
+        The kernel readers cover STL, OBJ, PLY, OFF, and 3MF without needing
+        VTK, which is what lets the same formats work from the headless CLI.
+        VTK's own formats still go through pyvista.
+        """
+        suffix = Path(path).suffix.lower()
+        if suffix in io_mesh.SUPPORTED_READ_FORMATS:
+            return to_polydata(io_mesh.read_mesh(path))
+        return pv.read(path).extract_surface().triangulate().clean()
 
     def duplicate_selected(self):
         oid = self.scene.selected_id
@@ -1011,42 +1276,47 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"Generated {self.scene.get_name(oid)}", 5000)
 
     def op_subdivide(self):
-        oid = self.scene.selected_id
-        if not oid: return
+        oid = self._live_selection()
+        if oid is None:
+            return
         actor = self.scene.objects[oid]
         mesh = actor.mapper.dataset
-        
+
         new_mesh = MeshOps.subdivide(mesh)
         self._update_actor_mesh(oid, actor, new_mesh)
 
     def op_extrude(self):
-        oid = self.scene.selected_id
-        if not oid: return
+        oid = self._live_selection()
+        if oid is None:
+            return
         actor = self.scene.objects[oid]
         mesh = actor.mapper.dataset
-        
+
         new_mesh = MeshOps.extrude(mesh, vector=(0, 0, 1.0))
         self._update_actor_mesh(oid, actor, new_mesh)
 
     def op_bevel(self):
-        oid = self.scene.selected_id
-        if not oid: return
+        oid = self._live_selection()
+        if oid is None:
+            return
         actor = self.scene.objects[oid]
         mesh = actor.mapper.dataset
-        
+
         new_mesh = MeshOps.bevel(mesh)
         self._update_actor_mesh(oid, actor, new_mesh)
 
     def op_clean(self):
-        oid = self.scene.selected_id
-        if not oid: return
+        oid = self._live_selection()
+        if oid is None:
+            return
         actor = self.scene.objects[oid]
         new_mesh = MeshOps.clean(actor.mapper.dataset)
         self._update_actor_mesh(oid, actor, new_mesh)
 
     def op_decimate(self):
-        oid = self.scene.selected_id
-        if not oid: return
+        oid = self._live_selection()
+        if oid is None:
+            return
         dialog = DecimateDialog(self)
         if dialog.exec() != QDialog.Accepted:
             return
@@ -1059,8 +1329,9 @@ class MainWindow(QMainWindow):
         self._update_actor_mesh(oid, actor, new_mesh)
 
     def op_offset_surface(self):
-        oid = self.scene.selected_id
-        if not oid: return
+        oid = self._live_selection()
+        if oid is None:
+            return
         dialog = OffsetSurfaceDialog(self)
         if dialog.exec() != QDialog.Accepted:
             return
@@ -1073,8 +1344,9 @@ class MainWindow(QMainWindow):
         self._update_actor_mesh(oid, actor, new_mesh)
 
     def op_clip(self):
-        oid = self.scene.selected_id
-        if not oid: return
+        oid = self._live_selection()
+        if oid is None:
+            return
         dialog = ClipDialog(self)
         if dialog.exec() != QDialog.Accepted:
             return
@@ -1087,8 +1359,9 @@ class MainWindow(QMainWindow):
         self._update_actor_mesh(oid, actor, new_mesh)
 
     def op_largest_component(self):
-        oid = self.scene.selected_id
-        if not oid: return
+        oid = self._live_selection()
+        if oid is None:
+            return
         actor = self.scene.objects[oid]
         try:
             new_mesh = MeshOps.largest_component(actor.mapper.dataset)
@@ -1098,8 +1371,9 @@ class MainWindow(QMainWindow):
         self._update_actor_mesh(oid, actor, new_mesh)
 
     def op_recompute_normals(self):
-        oid = self.scene.selected_id
-        if not oid: return
+        oid = self._live_selection()
+        if oid is None:
+            return
         actor = self.scene.objects[oid]
         try:
             new_mesh = MeshOps.recompute_normals(actor.mapper.dataset)
@@ -1109,8 +1383,9 @@ class MainWindow(QMainWindow):
         self._update_actor_mesh(oid, actor, new_mesh)
 
     def op_flip_normals(self):
-        oid = self.scene.selected_id
-        if not oid: return
+        oid = self._live_selection()
+        if oid is None:
+            return
         actor = self.scene.objects[oid]
         try:
             new_mesh = MeshOps.flip_normals(actor.mapper.dataset)
@@ -1148,13 +1423,42 @@ class MainWindow(QMainWindow):
     def export_object(self):
         oid = self.scene.selected_id
         if not oid:
+            QMessageBox.information(self, "Export", "Select an object to export.")
             return
-            
-        fname, _ = QFileDialog.getSaveFileName(self, "Export Mesh", "", "STL Files (*.stl);;PLY Files (*.ply);;All Files (*)")
-        if fname:
-            actor = self.scene.objects[oid]
-            save_mesh = self._world_mesh(actor)
-            save_mesh.save(fname)
+
+        fname, selected_filter = QFileDialog.getSaveFileName(
+            self,
+            "Export Mesh",
+            f"{self.scene.get_name(oid)}.stl",
+            "STL (*.stl);;OBJ (*.obj);;PLY (*.ply);;OFF (*.off);;3MF (*.3mf);;All Files (*)",
+        )
+        if not fname:
+            return
+
+        fname = self._ensure_extension(fname, selected_filter, ".stl")
+        try:
+            io_mesh.write_mesh(fname, actor_world_mesh(self.scene.objects[oid]))
+        except Exception as exc:
+            QMessageBox.warning(self, "Export Failed", str(exc))
+            return
+        self.statusBar().showMessage(f"Exported {Path(fname).name}", 5000)
+
+    @staticmethod
+    def _ensure_extension(path, selected_filter="", default=".stl"):
+        """Append the chosen filter's extension when the user typed none.
+
+        Without this a filename with no suffix reaches the writer, which then
+        fails on a format it cannot infer - after the user thinks they saved.
+        """
+        if Path(path).suffix:
+            return path
+        suffix = default
+        if "(*." in selected_filter:
+            candidate = selected_filter.split("(*.", 1)[1].split(")", 1)[0]
+            candidate = candidate.split()[0].strip()
+            if candidate and candidate != "*":
+                suffix = f".{candidate}"
+        return f"{path}{suffix}"
 
     def export_visible_scene(self):
         meshes = [
@@ -1166,17 +1470,28 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Export Scene", "There are no visible objects to export.")
             return
 
-        fname, _ = QFileDialog.getSaveFileName(
+        fname, selected_filter = QFileDialog.getSaveFileName(
             self,
             "Export Visible Scene",
-            "",
-            "PLY Files (*.ply);;STL Files (*.stl);;VTP Files (*.vtp);;All Files (*)",
+            "scene.stl",
+            "STL (*.stl);;OBJ (*.obj);;PLY (*.ply);;OFF (*.off);;3MF (*.3mf);;All Files (*)",
         )
         if not fname:
             return
 
-        combined = pv.MultiBlock(meshes).combine().extract_surface(algorithm="dataset_surface").triangulate().clean()
-        combined.save(fname)
+        fname = self._ensure_extension(fname, selected_filter, ".stl")
+        try:
+            combined = Mesh.concatenate(
+                [
+                    actor_world_mesh(actor)
+                    for actor in self.scene.objects.values()
+                    if actor.GetVisibility()
+                ]
+            )
+            io_mesh.write_mesh(fname, combined)
+        except Exception as exc:
+            QMessageBox.warning(self, "Export Failed", str(exc))
+            return
         self.statusBar().showMessage(f"Exported visible scene to {Path(fname).name}", 5000)
 
     def toggle_wireframe(self, checked):
@@ -1219,6 +1534,17 @@ class MainWindow(QMainWindow):
         elif view == "iso":
             self.viewport.plotter.view_isometric()
         self.viewport.plotter.reset_camera()
+
+    def _live_selection(self):
+        """The selected object id, but only if it still exists in the scene.
+
+        ``Scene.selected_id`` can outlive the object it names - undo, delete,
+        and project loading all replace the object table - so every mesh
+        operation goes through this rather than indexing the table directly and
+        raising ``KeyError`` at the user.
+        """
+        oid = self.scene.selected_id
+        return oid if oid in self.scene.objects else None
 
     def _selected_oids(self):
         oids = []
@@ -1487,8 +1813,12 @@ class MainWindow(QMainWindow):
         return value
 
     def _refresh_measurements(self):
+        selected = self._selected_oids()
         if hasattr(self, "measurements"):
-            self.measurements.set_measurements(self._selected_oids(), self.scene)
+            self.measurements.set_measurements(selected, self.scene)
+        if hasattr(self, "implicit_panel"):
+            # The Implicit Lab can only fill a shape once one is selected.
+            self.implicit_panel.set_has_selection(bool(selected))
         self.update_status()
 
     def update_status(self):
@@ -1506,8 +1836,8 @@ class MainWindow(QMainWindow):
         for item in objects:
             oid = str(item.get("oid", ""))
             if oid.startswith("obj_"):
-                try:
+                # A hand-edited project may carry a non-numeric id; skip it
+                # rather than refusing to open the file.
+                with contextlib.suppress(ValueError):
                     max_id = max(max_id, int(oid.split("_", 1)[1]))
-                except ValueError:
-                    pass
         return max_id

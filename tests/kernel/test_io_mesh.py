@@ -96,13 +96,13 @@ def minimal_3mf(path, model_part):
         path,
         {
             "[Content_Types].xml": (
-                '<?xml version="1.0" encoding="UTF-8"?>'
-                '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>'
-            ).encode(),
+                b'<?xml version="1.0" encoding="UTF-8"?>'
+                b'<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>'
+            ),
             "_rels/.rels": (
-                '<?xml version="1.0" encoding="UTF-8"?>'
-                '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"/>'
-            ).encode(),
+                b'<?xml version="1.0" encoding="UTF-8"?>'
+                b'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"/>'
+            ),
             "3D/3dmodel.model": model_part,
         },
     )
@@ -805,7 +805,7 @@ class Test3mf:
             "</resources>"
             '<build><item objectid="2"/></build>'
             "</model>"
-        ).encode("utf-8")
+        ).encode()
         path = minimal_3mf(tmp_path / "components.3mf", model)
         mesh = read_3mf(path)
         assert mesh.n_faces == 24
@@ -847,18 +847,18 @@ class Test3mf:
 
     def test_entity_expansion_is_refused(self, tmp_path):
         bomb = (
-            '<?xml version="1.0"?>'
-            "<!DOCTYPE model ["
-            '<!ENTITY a "aaaaaaaaaa">'
-            '<!ENTITY b "&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;">'
-            '<!ENTITY c "&b;&b;&b;&b;&b;&b;&b;&b;&b;&b;">'
-            "]>"
-            '<model unit="millimeter" '
-            'xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">'
-            "<resources><object id=\"1\"><mesh><vertices/><triangles/></mesh></object>"
-            "</resources><build><item objectid=\"1\"/></build><metadata>&c;</metadata>"
-            "</model>"
-        ).encode("utf-8")
+            b'<?xml version="1.0"?>'
+            b"<!DOCTYPE model ["
+            b'<!ENTITY a "aaaaaaaaaa">'
+            b'<!ENTITY b "&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;">'
+            b'<!ENTITY c "&b;&b;&b;&b;&b;&b;&b;&b;&b;&b;">'
+            b"]>"
+            b'<model unit="millimeter" '
+            b'xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">'
+            b"<resources><object id=\"1\"><mesh><vertices/><triangles/></mesh></object>"
+            b"</resources><build><item objectid=\"1\"/></build><metadata>&c;</metadata>"
+            b"</model>"
+        )
         path = minimal_3mf(tmp_path / "bomb.3mf", bomb)
         with pytest.raises(MeshIOError, match="document type declaration"):
             read_3mf(path)
@@ -883,11 +883,11 @@ class Test3mf:
 
     def test_model_without_objects_raises(self, tmp_path):
         model = (
-            '<?xml version="1.0"?>'
-            '<model unit="millimeter" '
-            'xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">'
-            "<resources/><build/></model>"
-        ).encode("utf-8")
+            b'<?xml version="1.0"?>'
+            b'<model unit="millimeter" '
+            b'xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">'
+            b"<resources/><build/></model>"
+        )
         path = minimal_3mf(tmp_path / "bare.3mf", model)
         with pytest.raises(MeshIOError, match="declares no objects"):
             read_3mf(path)
@@ -911,14 +911,14 @@ class Test3mf:
             {
                 "[Content_Types].xml": b"<Types/>",
                 "_rels/.rels": (
-                    '<?xml version="1.0"?>'
-                    '<Relationships xmlns="http://schemas.openxmlformats.org/'
-                    'package/2006/relationships">'
-                    '<Relationship Id="rel0" '
-                    'Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel" '
-                    'Target="/models/part.model"/>'
-                    "</Relationships>"
-                ).encode(),
+                    b'<?xml version="1.0"?>'
+                    b'<Relationships xmlns="http://schemas.openxmlformats.org/'
+                    b'package/2006/relationships">'
+                    b'<Relationship Id="rel0" '
+                    b'Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel" '
+                    b'Target="/models/part.model"/>'
+                    b"</Relationships>"
+                ),
                 "models/part.model": model_xml(CUBE_VERTICES, CUBE_TRIANGLES),
             },
         )

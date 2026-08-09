@@ -167,12 +167,11 @@ def _mesh_from(vertices, faces, label, attributes=None):
     """Build a Mesh from parsed arrays, rejecting out-of-range indices."""
     vertices = np.asarray(vertices, dtype=float).reshape(-1, 3)
     faces = np.asarray(faces, dtype=np.int64).reshape(-1, 3)
-    if len(faces):
-        if faces.min() < 0 or faces.max() >= len(vertices):
-            raise MeshIOError(
-                f"{label} references vertex indices outside the range "
-                f"0..{max(len(vertices) - 1, 0)}; the file is inconsistent."
-            )
+    if len(faces) and (faces.min() < 0 or faces.max() >= len(vertices)):
+        raise MeshIOError(
+            f"{label} references vertex indices outside the range "
+            f"0..{max(len(vertices) - 1, 0)}; the file is inconsistent."
+        )
     return Mesh(vertices, faces, attributes)
 
 
@@ -250,7 +249,7 @@ def _read_stl_ascii(data):
     coordinates = []
     for number, raw in enumerate(text.splitlines(), start=1):
         line = raw.strip()
-        if not line or not line[:1].lower() == "v":
+        if not line or line[:1].lower() != "v":
             continue
         parts = line.split()
         if parts[0].lower() != "vertex":
@@ -472,7 +471,7 @@ _PLY_INDEX_NAMES = ("vertex_indices", "vertex_index")
 class _PlyProperty:
     """One declared PLY property, scalar or list."""
 
-    __slots__ = ("name", "value_type", "is_list", "count_type")
+    __slots__ = ("count_type", "is_list", "name", "value_type")
 
     def __init__(self, name, value_type, is_list=False, count_type=None):
         self.name = name
@@ -484,7 +483,7 @@ class _PlyProperty:
 class _PlyElement:
     """One declared PLY element and the properties of each of its records."""
 
-    __slots__ = ("name", "count", "properties")
+    __slots__ = ("count", "name", "properties")
 
     def __init__(self, name, count):
         self.name = name
@@ -1224,13 +1223,13 @@ def write_3mf(target, mesh, unit="millimeter", name="opencad"):
         '<Default Extension="model" '
         'ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/>'
         "</Types>\n"
-    ).encode("utf-8")
+    ).encode()
     relationships = (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
         f'<Relationships xmlns="{_OPC_RELATIONSHIPS_NS}">'
         f'<Relationship Id="rel0" Type="{_3MF_REL_TYPE}" Target="/{_3MF_MODEL_PART}"/>'
         "</Relationships>\n"
-    ).encode("utf-8")
+    ).encode()
 
     handle = target if hasattr(target, "write") else _as_path(target)
     try:

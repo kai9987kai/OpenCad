@@ -1,5 +1,14 @@
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QFormLayout, QDoubleSpinBox, QLabel, QColorDialog, QPushButton
 from PySide6.QtCore import Signal
+from PySide6.QtWidgets import (
+    QColorDialog,
+    QDoubleSpinBox,
+    QFormLayout,
+    QLabel,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+)
+
 
 class PropertiesPanel(QWidget):
     property_changed = Signal(str, object)  # oid, changes
@@ -8,24 +17,24 @@ class PropertiesPanel(QWidget):
         super().__init__(parent)
         self.current_oid = None
         self.layout = QVBoxLayout(self)
-        
+
         self.form_layout = QFormLayout()
         self.layout.addLayout(self.form_layout)
-        
+
         # Position Inputs
         self.pos_x = self._create_spinbox()
         self.pos_y = self._create_spinbox()
         self.pos_z = self._create_spinbox()
-        
+
         self.form_layout.addRow("Pos X:", self.pos_x)
         self.form_layout.addRow("Pos Y:", self.pos_y)
         self.form_layout.addRow("Pos Z:", self.pos_z)
-        
+
         # Scale Inputs
         self.scale_x = self._create_spinbox(1.0)
         self.scale_y = self._create_spinbox(1.0)
         self.scale_z = self._create_spinbox(1.0)
-        
+
         self.form_layout.addRow("Scale X:", self.scale_x)
         self.form_layout.addRow("Scale Y:", self.scale_y)
         self.form_layout.addRow("Scale Z:", self.scale_z)
@@ -67,13 +76,13 @@ class PropertiesPanel(QWidget):
     def set_object(self, oid, actor):
         self._block_value_signals(True)
         self.current_oid = oid
-        
+
         # Update UI from actor
         pos = actor.position
         self.pos_x.setValue(pos[0])
         self.pos_y.setValue(pos[1])
         self.pos_z.setValue(pos[2])
-        
+
         scale = actor.scale
         self.scale_x.setValue(scale[0])
         self.scale_y.setValue(scale[1])
@@ -102,7 +111,7 @@ class PropertiesPanel(QWidget):
     def on_value_changed(self):
         if not self.current_oid:
             return
-            
+
         changes = {
             "position": (self.pos_x.value(), self.pos_y.value(), self.pos_z.value()),
             "scale": (self.scale_x.value(), self.scale_y.value(), self.scale_z.value()),

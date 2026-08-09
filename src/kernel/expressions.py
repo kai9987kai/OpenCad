@@ -560,7 +560,7 @@ class _Interpreter:
     formula the moment the user stops typing, before any value exists for it.
     """
 
-    __slots__ = ("expression", "variables", "functions")
+    __slots__ = ("expression", "functions", "variables")
 
     def __init__(self, expression, variables, functions):
         self.expression = expression
@@ -739,7 +739,7 @@ class Parameter:
     project file never has to distinguish "value" from "formula".
     """
 
-    __slots__ = ("name", "expression", "unit", "comment")
+    __slots__ = ("comment", "expression", "name", "unit")
 
     def __init__(self, name, expression, unit=None, comment=None):
         self.name = str(name)

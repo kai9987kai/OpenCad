@@ -414,7 +414,7 @@ class RayHits:
     Python loop out of the hot path.
     """
 
-    __slots__ = ("n_rays", "offsets", "ray_index", "distances", "faces", "points")
+    __slots__ = ("distances", "faces", "n_rays", "offsets", "points", "ray_index")
 
     def __init__(self, n_rays, offsets, ray_index, distances, faces, points):
         self.n_rays = int(n_rays)
@@ -431,7 +431,7 @@ class RayHits:
 
     @property
     def n_hits(self):
-        return int(len(self.distances))
+        return len(self.distances)
 
     def __len__(self):
         return self.n_rays
@@ -496,19 +496,44 @@ class MeshField:
         """``(min_xyz, max_xyz)`` of the source mesh."""
         return self.bvh.bounds
 
+    def as_sdf(self):
+        """Promote to a full :class:`src.kernel.sdf.SDF`.
+
+        A bare callable cannot be offset, shelled, or unioned - the operators
+        live on ``SDF``.  Wrapping here (with a lazy import, so this module
+        still does not depend on ``sdf`` at import time) is what actually makes
+        an imported STL a first-class implicit solid::
+
+            field = mesh_sdf(imported).as_sdf()
+            hollow = field.shell(1.2)          # exact, never self-intersecting
+
+        The result is marked exact: distance to a triangle soup really is a
+        true distance field of the tessellated solid, so offsets measure real
+        millimetres.
+        """
+        from src.kernel.sdf import SDF
+
+        return SDF(self, bounds=self.bounds, name="mesh", exact=True)
+
     def __repr__(self):
         return f"MeshField(faces={self.bvh.n_faces})"
 
 
-def mesh_sdf(mesh, **kwargs):
-    """Wrap a mesh as a callable signed-distance field.
+def mesh_sdf(mesh, as_sdf=True, **kwargs):
+    """Wrap a mesh as a signed-distance field.
+
+    Returns a composable :class:`src.kernel.sdf.SDF` by default, so an imported
+    mesh can be offset, shelled, and combined with analytic primitives.  Pass
+    ``as_sdf=False`` for the bare :class:`MeshField` callable if you want no
+    coupling to the ``sdf`` module at all.
 
     Extra keyword arguments are forwarded to :class:`BVH`.  Accuracy is exactly
     the accuracy of the tessellation: the field is the distance to the triangle
     soup, so a coarse mesh gives a faceted field.  The sign comes from
     :meth:`BVH.contains`, so the mesh must be closed and consistently wound.
     """
-    return MeshField(mesh if isinstance(mesh, BVH) else BVH(mesh, **kwargs))
+    field = MeshField(mesh if isinstance(mesh, BVH) else BVH(mesh, **kwargs))
+    return field.as_sdf() if as_sdf else field
 
 
 # ----------------------------------------------------------------------
@@ -523,20 +548,20 @@ class BVH:
     """
 
     __slots__ = (
-        "mesh",
+        "_scale",
+        "_triangles",
+        "face_max",
+        "face_min",
         "leaf_size",
-        "split_method",
-        "order",
-        "node_min",
-        "node_max",
+        "mesh",
+        "node_count",
         "node_left",
+        "node_max",
+        "node_min",
         "node_right",
         "node_start",
-        "node_count",
-        "face_min",
-        "face_max",
-        "_triangles",
-        "_scale",
+        "order",
+        "split_method",
     )
 
     def __init__(self, mesh, leaf_size=8, split_method="sah"):
@@ -668,11 +693,11 @@ class BVH:
     # ------------------------------------------------------------------
     @property
     def n_faces(self):
-        return int(len(self._triangles))
+        return len(self._triangles)
 
     @property
     def n_nodes(self):
-        return int(len(self.node_left))
+        return len(self.node_left)
 
     @property
     def is_empty(self):
@@ -1033,7 +1058,7 @@ class BVH:
 
         rng = np.random.default_rng(_JITTER_SEED)
         direction = _PROBE_DIRECTION / np.linalg.norm(_PROBE_DIRECTION)
-        for attempt in range(max(int(max_attempts), 1)):
+        for _attempt in range(max(int(max_attempts), 1)):
             if not len(todo):
                 break
             counts, fragile = self._parity_counts(points[todo], direction)
@@ -1060,7 +1085,11 @@ class BVH:
         if not len(rows):
             return np.zeros(count, dtype=np.int64), np.zeros(count, dtype=bool)
 
-        t, u, v, det = moller_trumbore(origins[rows], directions[rows], self._triangles[faces])
+        # The determinant is not needed here: near-parallel hits are caught by
+        # the barycentric fragility test below rather than by its magnitude.
+        t, u, v, _det = moller_trumbore(
+            origins[rows], directions[rows], self._triangles[faces]
+        )
         t_eps = 1e-12 * self._scale
         bary_tol = 1e-9
 
