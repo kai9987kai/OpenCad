@@ -87,7 +87,7 @@ def _analysis_worker(context, mesh, params):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Advanced CAD")
+        self.setWindowTitle("OpenCad")
         self.resize(1200, 800)
 
         self.scene = Scene()

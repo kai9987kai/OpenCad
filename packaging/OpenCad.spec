@@ -3,8 +3,13 @@
 
 Two executables share one ``dist/OpenCad`` folder:
 
-- ``OpenCad.exe``  - windowed, no console, the desktop application.
-- ``opencad.exe``  - console, the headless geometry tools.
+- ``OpenCad.exe``      - windowed, no console, the desktop application.
+- ``opencad-cli.exe``  - console, the headless geometry tools.
+
+The CLI is deliberately *not* called ``opencad.exe``. Windows filenames are
+case-insensitive, so ``opencad.exe`` and ``OpenCad.exe`` are the same file, and
+whichever PyInstaller wrote second would silently overwrite the first - leaving
+two identical binaries and a desktop icon that launches a command line parser.
 
 This is a **one-folder** build, not one-file. VTK ships a few hundred megabytes
 of DLLs and loads several of them dynamically; a one-file build has to unpack
@@ -113,9 +118,9 @@ cli_analysis = Analysis(
     pathex=[str(ROOT)],
     binaries=[],
     datas=[],
-    # The CLI needs the kernel only - no Qt, no VTK - but it shares this
-    # folder, so the heavy pieces are already present and must not be
-    # duplicated. MERGE below assigns each dependency to exactly one binary.
+    # The CLI needs the kernel only - no Qt, no VTK. Its dependencies are a
+    # strict subset of the GUI's, so COLLECT below de-duplicates them into one
+    # shared folder without any need for MERGE.
     hiddenimports=collect_submodules("src.kernel") + ["src.cli"],
     hookspath=[],
     hooksconfig={},
@@ -126,10 +131,6 @@ cli_analysis = Analysis(
     cipher=block_cipher,
     noarchive=False,
 )
-
-# Share every common dependency between the two executables rather than
-# shipping two copies of VTK.
-MERGE((gui_analysis, "OpenCad", "OpenCad"), (cli_analysis, "opencad", "opencad"))
 
 gui_pyz = PYZ(gui_analysis.pure, gui_analysis.zipped_data, cipher=block_cipher)
 cli_pyz = PYZ(cli_analysis.pure, cli_analysis.zipped_data, cipher=block_cipher)
@@ -162,7 +163,7 @@ cli_exe = EXE(
     cli_analysis.scripts,
     [],
     exclude_binaries=True,
-    name="opencad",
+    name="opencad-cli",  # never "opencad": see the note at the top of this file
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -177,12 +178,14 @@ cli_exe = EXE(
     version=version_argument,
 )
 
+# Both executables must be listed before any TOC: COLLECT treats leading EXE
+# arguments as programs to place in the folder and everything after as content.
 collection = COLLECT(
     gui_exe,
+    cli_exe,
     gui_analysis.binaries,
     gui_analysis.zipfiles,
     gui_analysis.datas,
-    cli_exe,
     cli_analysis.binaries,
     cli_analysis.zipfiles,
     cli_analysis.datas,

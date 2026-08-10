@@ -6,10 +6,11 @@
     Runs the whole release pipeline: icon, PyInstaller one-folder build, a smoke
     test of the result, and the Inno Setup installer.
 
-    The build is architecture-native. PyInstaller produces a binary for the
-    Python that runs it, so an ARM64 Python yields an ARM64 application which
-    will not run on x64 Windows, and vice versa. Build on the architecture you
-    intend to ship, or run this twice on two machines.
+    The build follows the *interpreter*, not the machine. PyInstaller freezes
+    whichever Python runs it, so an x64 Python on an ARM64 machine - which
+    Windows will happily run under emulation - produces an x64 application.
+    Build with the interpreter matching what you intend to ship, or run this on
+    two machines to cover both.
 
 .PARAMETER SkipInstaller
     Build the executables but not the setup file. Useful when Inno Setup is not
@@ -53,13 +54,17 @@ if (-not (Test-Path $python)) {
          "  .venv\Scripts\python -m pip install -e `".[gui,accel,dev]`" pyinstaller"
 }
 
-$arch = & $python -c "import platform; print(platform.machine().lower())"
-switch -Wildcard ($arch) {
-    'arm64' { $targetArch = 'arm64' }
-    'aarch64' { $targetArch = 'arm64' }
-    'amd64' { $targetArch = 'x64' }
-    'x86_64' { $targetArch = 'x64' }
-    default { Fail "Unsupported build architecture '$arch'." }
+# Ask sysconfig, not platform.machine(). On an ARM64 Windows machine running an
+# x64 Python under emulation, platform.machine() reports the *processor* (ARM64)
+# while the interpreter - and therefore everything PyInstaller freezes - is x64.
+# Getting this wrong stamps the installer with an architecture it will then
+# refuse to install on.
+$arch = & $python -c "import sysconfig; print(sysconfig.get_platform())"
+switch ($arch) {
+    'win-amd64' { $targetArch = 'x64' }
+    'win-arm64' { $targetArch = 'arm64' }
+    'win32'     { Fail "32-bit Python is not supported; use a 64-bit interpreter." }
+    default     { Fail "Unsupported build platform '$arch'." }
 }
 Write-Host "Building OpenCad for windows-$targetArch" -ForegroundColor Green
 
@@ -97,7 +102,7 @@ if ($LASTEXITCODE -ne 0) { Fail "PyInstaller failed." }
 
 $appDir = Join-Path $root 'dist\OpenCad'
 $guiExe = Join-Path $appDir 'OpenCad.exe'
-$cliExe = Join-Path $appDir 'opencad.exe'
+$cliExe = Join-Path $appDir 'opencad-cli.exe'
 foreach ($exe in @($guiExe, $cliExe)) {
     if (-not (Test-Path $exe)) { Fail "Expected $exe but it was not produced." }
 }

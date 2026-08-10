@@ -3,7 +3,7 @@
 Produces two things:
 
 - `dist\OpenCad\` — a self-contained application folder holding `OpenCad.exe`
-  (the desktop app) and `opencad.exe` (the headless CLI). It runs on a machine
+  (the desktop app) and `opencad-cli.exe` (the headless CLI). It runs on a machine
   with no Python installed.
 - `dist\installer\OpenCad-<version>-windows-<arch>-setup.exe` — a single-file
   installer with shortcuts, `.ocad` file association, an optional PATH entry,

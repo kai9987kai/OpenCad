@@ -9,7 +9,17 @@ Underneath the desktop app is a geometry kernel that runs on **numpy alone** —
 no VTK, no OpenGL, no Qt. That is what makes the geometry unit tested (800
 tests), usable headlessly, and reusable from your own scripts.
 
-## Quick Start
+## Install
+
+Grab the Windows installer from
+[Releases](https://github.com/kai9987kai/OpenCad/releases) and run it. It needs
+no Python, installs per-user without an administrator prompt, associates `.ocad`
+project files, and can optionally put the command line tool on your PATH.
+
+The builds are unsigned, so SmartScreen warns on first run — choose **More info**
+then **Run anyway**.
+
+## Run from source
 
 ```bash
 python -m venv .venv
@@ -182,11 +192,23 @@ src/
     main_window.py   menus, docks, wiring
     implicit_panel.py, analysis_panel.py, primitive_panel.py, ...
     tasks.py         background geometry on a thread pool
+packaging/           PyInstaller spec, Inno Setup script, icon generator
 docs/
   architecture.md    the layering, and why it is that way
   research_roadmap.md
-tests/               800 tests, no display required
+tests/               825 tests, no display required
 ```
+
+## Building a Windows release
+
+```powershell
+.\packaging\build.ps1
+```
+
+Produces `dist\OpenCad\` (a self-contained application folder) and
+`dist\installer\OpenCad-<version>-windows-<arch>-setup.exe`. See
+[packaging/README.md](packaging/README.md) for prerequisites and the decisions
+behind the build.
 
 See [docs/architecture.md](docs/architecture.md) for how the layers fit together
 and [CONTRIBUTING.md](CONTRIBUTING.md) for the development workflow.

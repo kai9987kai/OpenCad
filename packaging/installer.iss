@@ -13,14 +13,24 @@
 #define AppPublisher   "OpenCad"
 #define AppURL         "https://github.com/kai9987kai/OpenCad"
 #define AppExeName     "OpenCad.exe"
-#define CliExeName     "opencad.exe"
+#define CliExeName     "opencad-cli.exe"
 #define SourceDir      "..\dist\OpenCad"
 
 ; The architecture of the build. PyInstaller produces a binary for whatever
-; Python built it, so this must match - an ARM64 build will not start on x64
-; and Windows should refuse to install it rather than fail confusingly later.
+; Python built it, so the installer must refuse machines that cannot run the
+; result rather than failing confusingly after installing.
 #ifndef TargetArch
-  #define TargetArch "arm64"
+  #define TargetArch "x64"
+#endif
+
+; "compatible" rather than "os" is deliberate for x64: ARM64 Windows runs x64
+; binaries under emulation perfectly well, and an installer that refuses to
+; install on an ARM64 machine would be wrong. An ARM64 build, by contrast,
+; genuinely only runs on ARM64.
+#if TargetArch == "arm64"
+  #define ArchAllowed "arm64"
+#else
+  #define ArchAllowed "x64compatible"
 #endif
 
 [Setup]
@@ -53,8 +63,8 @@ PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog commandline
 
 ; Refuse to install a binary the processor cannot run.
-ArchitecturesAllowed={#TargetArch}
-ArchitecturesInstallIn64BitMode={#TargetArch}
+ArchitecturesAllowed={#ArchAllowed}
+ArchitecturesInstallIn64BitMode={#ArchAllowed}
 
 ; VTK and Qt make this a large payload; warn early rather than half way in.
 DirExistsWarning=no
@@ -82,37 +92,41 @@ Name: "{group}\Uninstall {#AppName}";    Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#AppName}";        Filename: "{app}\{#AppExeName}"; Tasks: desktopicon
 
 [Registry]
+; HKA is Inno's "auto" root: HKLM for a machine-wide install, HKCU for a
+; per-user one. Writing under Software\Classes there means the association
+; lands wherever this particular install has the right to put it.
+
 ; ---- .ocad association ------------------------------------------------
-; Written under the user's or the machine's classes root depending on the
-; install mode, which is what {autosoftwareclasses} resolves.
-Root: {autosoftwareclasses}; Subkey: ".ocad"; \
+Root: HKA; Subkey: "Software\Classes\.ocad"; \
     ValueType: string; ValueName: ""; ValueData: "OpenCad.Project"; \
     Flags: uninsdeletevalue; Tasks: associate
-Root: {autosoftwareclasses}; Subkey: "OpenCad.Project"; \
+Root: HKA; Subkey: "Software\Classes\OpenCad.Project"; \
     ValueType: string; ValueName: ""; ValueData: "OpenCad Project"; \
     Flags: uninsdeletekey; Tasks: associate
-Root: {autosoftwareclasses}; Subkey: "OpenCad.Project\DefaultIcon"; \
+Root: HKA; Subkey: "Software\Classes\OpenCad.Project\DefaultIcon"; \
     ValueType: string; ValueName: ""; ValueData: "{app}\{#AppExeName},0"; \
     Tasks: associate
-Root: {autosoftwareclasses}; Subkey: "OpenCad.Project\shell\open\command"; \
+Root: HKA; Subkey: "Software\Classes\OpenCad.Project\shell\open\command"; \
     ValueType: string; ValueName: ""; ValueData: """{app}\{#AppExeName}"" ""%1"""; \
     Tasks: associate
 
 ; ---- "Open with OpenCad" on mesh files --------------------------------
-; Added to the *OpenWithProgids* list rather than taking over the extension,
-; so this appears in the Open With menu without stealing .stl from whatever
-; the user already uses.
-Root: {autosoftwareclasses}; Subkey: "Applications\{#AppExeName}\shell\open\command"; \
+; Registered as an application that supports these types rather than taking
+; over the extensions, so OpenCad appears in the Open With menu without
+; stealing .stl from whatever viewer the user already prefers.
+Root: HKA; Subkey: "Software\Classes\Applications\{#AppExeName}\shell\open\command"; \
     ValueType: string; ValueName: ""; ValueData: """{app}\{#AppExeName}"" ""%1"""; \
     Flags: uninsdeletekey; Tasks: associate
-Root: {autosoftwareclasses}; Subkey: "Applications\{#AppExeName}\SupportedTypes"; \
+Root: HKA; Subkey: "Software\Classes\Applications\{#AppExeName}\SupportedTypes"; \
     ValueType: string; ValueName: ".stl";  ValueData: ""; Tasks: associate
-Root: {autosoftwareclasses}; Subkey: "Applications\{#AppExeName}\SupportedTypes"; \
+Root: HKA; Subkey: "Software\Classes\Applications\{#AppExeName}\SupportedTypes"; \
     ValueType: string; ValueName: ".obj";  ValueData: ""; Tasks: associate
-Root: {autosoftwareclasses}; Subkey: "Applications\{#AppExeName}\SupportedTypes"; \
+Root: HKA; Subkey: "Software\Classes\Applications\{#AppExeName}\SupportedTypes"; \
     ValueType: string; ValueName: ".ply";  ValueData: ""; Tasks: associate
-Root: {autosoftwareclasses}; Subkey: "Applications\{#AppExeName}\SupportedTypes"; \
+Root: HKA; Subkey: "Software\Classes\Applications\{#AppExeName}\SupportedTypes"; \
     ValueType: string; ValueName: ".3mf";  ValueData: ""; Tasks: associate
+Root: HKA; Subkey: "Software\Classes\Applications\{#AppExeName}\SupportedTypes"; \
+    ValueType: string; ValueName: ".off";  ValueData: ""; Tasks: associate
 
 [Run]
 Filename: "{app}\{#AppExeName}"; Description: "Launch {#AppName}"; \
